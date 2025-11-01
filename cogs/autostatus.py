@@ -115,6 +115,7 @@ class AutoStatus(commands.Cog):
             title=f"{title_name} — {title_status}",
             description=motd,
             color=color,
+            timestamp=datetime.utcnow()
         )
 
         embed.add_field(name="Address", value=f"`{server_ip}`", inline=True)
@@ -123,8 +124,7 @@ class AutoStatus(commands.Cog):
 
         # footer + author using bot info
         embed.set_author(name=self.bot.user.name, icon_url=getattr(self.bot.user.display_avatar, "url", None))
-        current_time = int(datetime.utcnow().timestamp())
-        embed.set_footer(text=f"Updated <t:{current_time}:R>", icon_url=None)
+        embed.set_footer(text="Updated", icon_url=None)
 
         # favicon handling: if data URI, skip ; if url and <=2048 set it
         try:

@@ -1,112 +1,88 @@
 import nextcord
 from nextcord.ext import commands
 from nextcord import Interaction
-from dotenv import load_dotenv
-import os
-from datetime import datetime
 import requests
-import io
-import base64
+import os
+from datetime import datetime, timezone
+from dotenv import load_dotenv
 
 load_dotenv()
-TEST_SERVER_ID = int(os.getenv('TEST_SERVER_ID'))
-
+TEST_SERVER_ID = int(os.getenv('TEST_SERVER_ID', 0))
+STATUS_FILE = os.path.join(os.path.dirname(__file__), "server_status_config.json")
 
 class Status(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-
-    @commands.command(name="status")
-    async def status_command(self, ctx, server_ip: str):
-        status = get_status(server_ip)
-        embed, file_to_send = format_status_message(server_ip, status, ctx, self.bot)
-        print(status)
-
-        if file_to_send:
-            await ctx.send(embed=embed, file=file_to_send)
-        else:
-            await ctx.send(embed=embed)
-
-
-    @nextcord.slash_command(name="status", description="Replies with the bot's status!", guild_ids=[TEST_SERVER_ID])
-    async def status(
-        self, 
-        interaction: Interaction,
-        server_ip: str = nextcord.SlashOption(
-            description="The address of the Minecraft server",
-            required=True
-        )
-    ):
-        status = get_status(server_ip)
-        embed, file_to_send = format_status_message(server_ip, status, interaction, self.bot)
-        print(status)
-
-        if file_to_send:
-            await interaction.response.send_message(embed=embed, file=file_to_send, ephemeral=False)
-        else:
-            await interaction.response.send_message(embed=embed, ephemeral=False)
-
-
-
-def get_status(server_ip):
-    status = requests.get("https://api.mcsrvstat.us/3/" + server_ip).json()
-    return status
-
-def format_status_message(server_address, status, invoker, bot):
-    is_online = status.get("online", False)
-    server_ip = server_address
-    motd = "\n".join(status.get("motd", {}).get("clean", [])) or "No MOTD"
-    players_online = status.get("players", {}).get("online", 0)
-    players_max = status.get("players", {}).get("max", 0)
-    version = status.get("version", "Unknown")
-    favicon_url = status.get("icon", None)
-
-    color_online = 0x55FF55
-    color_offline = 0xFF5555
-    color = color_online if is_online else color_offline
-
-    title_status = "Online" if is_online else "Offline"
-    embed = nextcord.Embed(
-        title=f"Minecraft Server — {title_status}",
-        description=motd,
-        color=color,
-        timestamp=datetime.utcnow()
-    )
-
-    file_to_send = None
-    if favicon_url:
+    def get_status(self, server_ip):
+        """Fetch server status from API"""
         try:
-            if favicon_url.startswith("data:") and "base64," in favicon_url:
-                header, b64 = favicon_url.split("base64,", 1)
-                data = base64.b64decode(b64)
-                fp = io.BytesIO(data)
-                fp.seek(0)
-                file_to_send = nextcord.File(fp, filename="server_icon.png")
-                embed.set_thumbnail(url="attachment://server_icon.png")
-            else:
-                # normal URL - only set if reasonable length
-                if len(favicon_url) <= 2048:
-                    embed.set_thumbnail(url=favicon_url)
-        except Exception:
-            # on any failure, skip thumbnail
-            pass
+            resp = requests.get(f"https://api.mcsrvstat.us/3/{server_ip}", timeout=10)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            print(f"Error fetching status for {server_ip}: {e}")
+            return None
 
-    # Primary info fields
-    embed.add_field(name="Address", value=f"`{server_ip}`", inline=True)
-    embed.add_field(name="Players", value=f"{players_online}/{players_max}", inline=True)
-    embed.add_field(name="Version", value=version, inline=True)
+    def create_embed(self, status, server_ip, display_name=None):
+        """Create status embed"""
+        is_online = status.get("online", False)
+        title_name = display_name or "Minecraft Server"
+        
+        embed = nextcord.Embed(
+            title=f"{title_name} — {'Online' if is_online else 'Offline'}",
+            description="\n".join(status.get("motd", {}).get("clean", [])) or "No MOTD",
+            color=0x55FF55 if is_online else 0xFF5555,
+            timestamp=datetime.now(timezone.utc)
+        )
 
-    # Determine user (works for Interaction or Context)
-    user_obj = getattr(invoker, "user", None) or getattr(invoker, "author", None)
-    user_mention = getattr(user_obj, "mention", str(user_obj) if user_obj else "Unknown")
-    user_avatar_url = getattr(getattr(user_obj, "display_avatar", None), "url", None)
+        # Add fields
+        embed.add_field(name="Address", value=f"`{server_ip}`", inline=True)
+        embed.add_field(
+            name="Players", 
+            value=f"{status.get('players', {}).get('online', 0)}/{status.get('players', {}).get('max', 0)}", 
+            inline=True
+        )
+        embed.add_field(name="Version", value=status.get("version", "Unknown"), inline=True)
 
-    # Visual footer and author
-    embed.set_footer(text=f"Requested by {user_mention}", icon_url=user_avatar_url)
-    embed.set_author(name=bot.user.name, icon_url=getattr(bot.user.display_avatar, "url", None))
-    return embed, file_to_send
+        # Set author and footer
+        embed.set_author(name=self.bot.user.name, icon_url=getattr(self.bot.user.display_avatar, "url", None))
+        embed.set_footer(text="Last Updated")
 
+        # Set thumbnail if valid
+        favicon = status.get("icon")
+        if favicon and isinstance(favicon, str) and not favicon.startswith("data:") and len(favicon) <= 2048:
+            embed.set_thumbnail(url=favicon)
+
+        return embed
+
+
+    @nextcord.slash_command(
+        name="status",
+        description="Check the status of a minecraft server",
+        # default_member_permissions=nextcord.Permissions(manage_channels=True)
+    )
+    async def status(
+        self,
+        interaction: Interaction,
+        server_ip: str = nextcord.SlashOption(description="Server IP address (and port)", required=True),
+        name: str = nextcord.SlashOption(description="Display name for the server", required=False)
+    ):
+        # if not interaction.guild or not interaction.channel:
+        #     await interaction.response.send_message("This command must be used in a server channel", ephemeral=True)
+        #     return
+
+        await interaction.response.defer(ephemeral=True)
+
+        # Create initial status message
+        status = self.get_status(server_ip)
+        if not status:
+            await interaction.followup.send("Could not fetch server status. Will retry later.", ephemeral=True)
+            return
+
+        embed = self.create_embed(status, server_ip, name)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 def setup(bot):
-    bot.add_cog(Status(bot))
+    cog = Status(bot)
+    bot.add_cog(cog)

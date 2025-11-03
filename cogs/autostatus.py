@@ -1,226 +1,162 @@
 import nextcord
+from nextcord.ext import commands
+from nextcord import Interaction
 import requests
 import json
 import os
 import asyncio
-from nextcord.ext import commands
-from nextcord import Interaction
-from datetime import datetime
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 load_dotenv()
 TEST_SERVER_ID = int(os.getenv('TEST_SERVER_ID', 0))
-
-# Save config next to this file so restarts still find it
 STATUS_FILE = os.path.join(os.path.dirname(__file__), "server_status_config.json")
-
 
 class AutoStatus(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.status_config = {}  # keyed by guild id (string)
-        self.load_config()
+        self.status_config = self.load_config()
 
     def load_config(self):
+        """Load status config from file"""
         if os.path.exists(STATUS_FILE):
             try:
                 with open(STATUS_FILE, "r", encoding="utf-8") as f:
-                    self.status_config = json.load(f)
+                    return json.load(f)
             except Exception as e:
-                print("Failed to load autostatus config:", e)
-                self.status_config = {}
+                print(f"Failed to load config: {e}")
+        return {}
 
     def save_config(self):
+        """Save current config to file"""
         try:
             with open(STATUS_FILE, "w", encoding="utf-8") as f:
                 json.dump(self.status_config, f, indent=2)
         except Exception as e:
-            print("Failed to save autostatus config:", e)
+            print(f"Failed to save config: {e}")
 
-    async def update_status(self):
-        await self.bot.wait_until_ready()
-        while not self.bot.is_closed():
-            for guild_id, cfg in list(self.status_config.items()):
-                channel_id = cfg.get("channel_id")
-                server_ip = cfg.get("server_ip")
-                message_id = cfg.get("message_id")  # optional stored message id
-                display_name = cfg.get("name")  # optional display name
-
-                if not channel_id or not server_ip:
-                    continue
-
-                # get or fetch channel
-                channel = self.bot.get_channel(channel_id)
-                if channel is None:
-                    try:
-                        channel = await self.bot.fetch_channel(channel_id)
-                    except Exception:
-                        print(f"Could not fetch channel {channel_id} for autostatus (guild {guild_id})")
-                        continue
-
-                status = self.get_status(server_ip)
-                if not status:
-                    continue
-
-                embed = self.create_embed(status, server_ip, display_name)
-
-                # update existing message or send new one and store id
-                if message_id:
-                    try:
-                        msg = await channel.fetch_message(message_id)
-                        await msg.edit(embed=embed)
-                    except nextcord.NotFound:
-                        try:
-                            new_msg = await channel.send(embed=embed)
-                            cfg["message_id"] = new_msg.id
-                            self.save_config()
-                        except Exception as e:
-                            print("Failed to send autostatus message:", e)
-                    except Exception as e:
-                        print("Error updating autostatus message:", e)
-                else:
-                    try:
-                        new_msg = await channel.send(embed=embed)
-                        cfg["message_id"] = new_msg.id
-                        self.save_config()
-                    except Exception as e:
-                        print("Failed to send autostatus message:", e)
-
-            await asyncio.sleep(300)  # 5 minutes
+    async def update_message(self, channel, message_id, embed):
+        """Update or send status message"""
+        try:
+            if message_id:
+                try:
+                    msg = await channel.fetch_message(message_id)
+                    await msg.edit(embed=embed)
+                    return message_id
+                except nextcord.NotFound:
+                    pass
+            
+            new_msg = await channel.send(embed=embed)
+            return new_msg.id
+        except Exception as e:
+            print(f"Failed to update/send message: {e}")
+            return None
 
     def get_status(self, server_ip):
+        """Fetch server status from API"""
         try:
             resp = requests.get(f"https://api.mcsrvstat.us/3/{server_ip}", timeout=10)
             resp.raise_for_status()
             return resp.json()
-        except requests.RequestException as e:
+        except Exception as e:
             print(f"Error fetching status for {server_ip}: {e}")
             return None
 
     def create_embed(self, status, server_ip, display_name=None):
+        """Create status embed"""
         is_online = status.get("online", False)
-        motd = "\n".join(status.get("motd", {}).get("clean", [])) or "No MOTD"
-        players_online = status.get("players", {}).get("online", 0)
-        players_max = status.get("players", {}).get("max", 0)
-        version = status.get("version", "Unknown")
-        favicon = status.get("icon", None)
-
-        color_online = 0x55FF55
-        color_offline = 0xFF5555
-        color = color_online if is_online else color_offline
-
-        title_status = "Online" if is_online else "Offline"
-        title_name = display_name if display_name else "Minecraft Server"
+        title_name = display_name or "Minecraft Server"
+        
         embed = nextcord.Embed(
-            title=f"{title_name} — {title_status}",
-            description=motd,
-            color=color,
-            timestamp=datetime.datetime.now()
+            title=f"{title_name} — {'Online' if is_online else 'Offline'}",
+            description="\n".join(status.get("motd", {}).get("clean", [])) or "No MOTD",
+            color=0x55FF55 if is_online else 0xFF5555,
+            timestamp=datetime.now(timezone.utc)
         )
 
+        # Add fields
         embed.add_field(name="Address", value=f"`{server_ip}`", inline=True)
-        embed.add_field(name="Players", value=f"{players_online}/{players_max}", inline=True)
-        embed.add_field(name="Version", value=version, inline=True)
+        embed.add_field(
+            name="Players", 
+            value=f"{status.get('players', {}).get('online', 0)}/{status.get('players', {}).get('max', 0)}", 
+            inline=True
+        )
+        embed.add_field(name="Version", value=status.get("version", "Unknown"), inline=True)
 
-        # footer + author using bot info
+        # Set author and footer
         embed.set_author(name=self.bot.user.name, icon_url=getattr(self.bot.user.display_avatar, "url", None))
-        embed.set_footer(text="Updated", icon_url=None)
+        embed.set_footer(text="Last Updated")
 
-        # favicon handling: if data URI, skip ; if url and <=2048 set it
-        try:
-            if favicon and isinstance(favicon, str) and not favicon.startswith("data:") and len(favicon) <= 2048:
-                embed.set_thumbnail(url=favicon)
-        except Exception:
-            pass
+        # Set thumbnail if valid
+        favicon = status.get("icon")
+        if favicon and isinstance(favicon, str) and not favicon.startswith("data:") and len(favicon) <= 2048:
+            embed.set_thumbnail(url=favicon)
 
         return embed
 
+    async def update_status(self):
+        """Background task to update all status messages"""
+        await self.bot.wait_until_ready()
+        while not self.bot.is_closed():
+            for guild_id, cfg in list(self.status_config.items()):
+                channel = self.bot.get_channel(cfg.get("channel_id"))
+                if not channel:
+                    continue
+
+                status = self.get_status(cfg.get("server_ip"))
+                if status:
+                    embed = self.create_embed(status, cfg.get("server_ip"), cfg.get("name"))
+                    new_id = await self.update_message(channel, cfg.get("message_id"), embed)
+                    
+                    if new_id and new_id != cfg.get("message_id"):
+                        cfg["message_id"] = new_id
+                        self.save_config()
+
+            await asyncio.sleep(300)  # 5 minutes
+
     @nextcord.slash_command(
         name="autostatus",
-        description="Set up auto-updating server status in this channel.",
-        guild_ids=None,
+        description="Set up auto-updating server status in this channel",
         default_member_permissions=nextcord.Permissions(manage_channels=True)
     )
-    async def set_autostatus_command(
+    async def set_autostatus(
         self,
         interaction: Interaction,
-        name: str = nextcord.SlashOption(
-            description="Optional display name for the server (use underscores for spaces)",
-            required=True,
-            default=None
-        ),
-        server_ip: str = nextcord.SlashOption(
-            description="The address of the Minecraft server (ip[:port])",
-            required=True
-        )
+        name: str = nextcord.SlashOption(description="Display name for the server", required=True),
+        server_ip: str = nextcord.SlashOption(description="Server IP address (and port)", required=True)
     ):
-        # Add an additional permission check just to be safe
-        if not interaction.user.guild_permissions.manage_channels:
-            await interaction.response.send_message("You need Manage Channels permission to use this command.", ephemeral=True)
+        if not interaction.guild or not interaction.channel:
+            await interaction.response.send_message("This command must be used in a server channel", ephemeral=True)
             return
-            
-        """Set the server IP (and optional display name) to auto-update in this channel and create/update the embed immediately."""
+
         await interaction.response.defer(ephemeral=True)
-        guild = interaction.guild
-        if guild is None:
-            await interaction.followup.send("This command must be used in a guild.", ephemeral=True)
-            return
-
-        guild_key = str(guild.id)
-        channel = interaction.channel
-        if channel is None:
-            await interaction.followup.send("Could not determine channel.", ephemeral=True)
-            return
-        channel_id = channel.id
-
-        # normalize name (allow users to pass underscores for spaces)
-        display_name = name.replace("_", " ") if isinstance(name, str) and name else None
-
-        # update config and save
-        entry = self.status_config.get(guild_key, {})
-        entry.update({
-            "channel_id": channel_id,
+        
+        # Update config
+        guild_key = str(interaction.guild.id)
+        self.status_config[guild_key] = {
+            "channel_id": interaction.channel.id,
             "server_ip": server_ip,
-            "name": display_name
-        })
-        self.status_config[guild_key] = entry
+            "name": name.replace("_", " ")
+        }
         self.save_config()
 
-        # attempt to fetch status now and create/update embed/message
+        # Create initial status message
         status = self.get_status(server_ip)
         if not status:
-            await interaction.followup.send(f"Could not fetch status for `{server_ip}`. Saved config; will retry in background.", ephemeral=True)
+            await interaction.followup.send("Could not fetch server status. Will retry later.", ephemeral=True)
             return
 
-        embed = self.create_embed(status, server_ip, display_name)
-        message_id = entry.get("message_id")
-
-        if message_id:
-            try:
-                msg = await channel.fetch_message(message_id)
-                await msg.edit(embed=embed)
-                await interaction.followup.send(f"Updated existing auto-status for `{server_ip}` in this channel.", ephemeral=True)
-                entry["message_id"] = msg.id
-                self.save_config()
-                return
-            except nextcord.NotFound:
-                pass
-            except Exception as e:
-                print("Error editing stored autostatus message:", e)
-
-        # send a new message and store id
-        try:
-            new_msg = await channel.send(embed=embed)
-            entry["message_id"] = new_msg.id
-            self.status_config[guild_key] = entry
+        embed = self.create_embed(status, server_ip, name)
+        msg_id = await self.update_message(interaction.channel, None, embed)
+        
+        if msg_id:
+            self.status_config[guild_key]["message_id"] = msg_id
             self.save_config()
-            await interaction.followup.send(f"Auto status set for server `{server_ip}` in this channel.", ephemeral=True)
-        except Exception as e:
-            await interaction.followup.send(f"Failed to create autostatus message: {e}", ephemeral=True)
-
+            await interaction.followup.send("Auto-status message created successfully!", ephemeral=True)
+        else:
+            await interaction.followup.send("Failed to create status message", ephemeral=True)
 
 def setup(bot):
-    instance = AutoStatus(bot)
-    bot.add_cog(instance)
-    # schedule the update loop for the same instance
-    bot.loop.create_task(instance.update_status())
+    cog = AutoStatus(bot)
+    bot.add_cog(cog)
+    bot.loop.create_task(cog.update_status())

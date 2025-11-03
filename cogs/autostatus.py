@@ -115,7 +115,7 @@ class AutoStatus(commands.Cog):
             title=f"{title_name} — {title_status}",
             description=motd,
             color=color,
-            timestamp=datetime.utcnow()
+            timestamp=datetime.now(datetime.timezone.utc)
         )
 
         embed.add_field(name="Address", value=f"`{server_ip}`", inline=True)

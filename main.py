@@ -6,8 +6,8 @@ from dotenv import load_dotenv
 import os
 
 load_dotenv()
-DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
-TEST_SERVER_ID = os.getenv('TEST_SERVER_ID')
+DISCORD_TOKEN = str(os.getenv('DISCORD_TOKEN'))
+TEST_SERVER_ID = int(os.getenv('TEST_SERVER_ID', 0))
 
 intents = nextcord.Intents.default()
 intents.message_content = True

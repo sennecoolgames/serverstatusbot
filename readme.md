@@ -48,11 +48,11 @@ GreatNet Hosting was kind enough to provide this bot publically. Consider suppor
 4. **Run the bot:**
     ```powershell
     # Windows
-    & C:/Python312/python.exe main.py
+    C:/Python312/python.exe main.py
     ```
     ```bash
     # Linux
-    & python3 main.py
+    python3 main.py
     ```
 
 ## Usage

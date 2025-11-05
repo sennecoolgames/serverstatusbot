@@ -8,11 +8,15 @@ import base64
 import io
 from datetime import datetime, timezone
 from dotenv import load_dotenv
+import yaml
 from mcstatus import JavaServer
 
 load_dotenv()
 TEST_SERVER_ID = int(os.getenv('TEST_SERVER_ID', 0))
-STATUS_FILE = os.path.join(os.path.dirname(__file__), "server_status_config.json")
+STATUS_FILE = os.path.join(os.path.dirname(__file__), "../server_status_config.json")
+CONFIG_FILE = os.path.join(os.path.dirname(__file__), "../config.yml")
+with open(CONFIG_FILE, 'r') as f:
+    config = yaml.safe_load(f)
 
 class AutoStatus(commands.Cog):
     def __init__(self, bot):
@@ -85,8 +89,10 @@ class AutoStatus(commands.Cog):
             inline=True
         )
         version = status.version.name if is_online else "Unknown"
-        if any(x in version.lower() for x in ["velocity", "bungeecord", "paper", "waterfall", "purpur", "spigot", "fabric", "forge", "quilt", "sponge", "bukkit"]):
-            version = version.split(" ")[1]
+        keywords_to_remove = config.get('keywords_to_remove', [])
+        if any(x in version.lower() for x in keywords_to_remove):
+            for keyword in keywords_to_remove:
+                version = version.lower().replace(keyword, "").strip()
         embed.add_field(name="Version", value=str(version), inline=True)
 
         # Set author and footer

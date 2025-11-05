@@ -1,0 +1,16 @@
+# List of keywords to remove from server version strings
+# Keep this lowecase!
+keywords_to_remove: [
+  "velocity",
+  "bungeecord",
+  "paper",
+  "waterfall",
+  "purpur",
+  "spigot",
+  "fabric",
+  "forge",
+  "quilt",
+  "sponge",
+  "bukkit",
+  "requires mc"
+]

@@ -56,7 +56,7 @@ class Status(commands.Cog):
             inline=True
         )
         version = status.version.name if is_online else "Unknown"
-        if any(x in version.lower() for x in ["velocity", "bungeecord"]):
+        if any(x in version.lower() for x in ["velocity", "bungeecord", "paper", "waterfall", "purpur", "spigot", "fabric", "forge", "quilt", "sponge", "bukkit"]):
             version = version.split(" ")[1]
         embed.add_field(name="Version", value=str(version), inline=True)
 

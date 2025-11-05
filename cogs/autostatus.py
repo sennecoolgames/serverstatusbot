@@ -1,12 +1,14 @@
 import nextcord
 from nextcord.ext import commands
 from nextcord import Interaction
-import requests
 import json
 import os
 import asyncio
+import base64
+import io
 from datetime import datetime, timezone
 from dotenv import load_dotenv
+from mcstatus import JavaServer
 
 load_dotenv()
 TEST_SERVER_ID = int(os.getenv('TEST_SERVER_ID', 0))
@@ -35,7 +37,7 @@ class AutoStatus(commands.Cog):
         except Exception as e:
             print(f"Failed to save config: {e}")
 
-    async def update_message(self, channel, message_id, embed):
+    async def update_message(self, channel, message_id, embed, file=None):
         """Update or send status message"""
         try:
             if message_id:
@@ -46,30 +48,31 @@ class AutoStatus(commands.Cog):
                 except nextcord.NotFound:
                     pass
             
-            new_msg = await channel.send(embed=embed)
+            # Only send file with initial message
+            new_msg = await channel.send(embed=embed, file=file) if file else await channel.send(embed=embed)
             return new_msg.id
         except Exception as e:
             print(f"Failed to update/send message: {e}")
             return None
 
     def get_status(self, server_ip):
-        """Fetch server status from API"""
+        """Fetch server status localy using mcstatus"""
         try:
-            resp = requests.get(f"https://api.mcsrvstat.us/3/{server_ip}", timeout=10)
-            resp.raise_for_status()
-            return resp.json()
+            server = JavaServer.lookup(server_ip)
+            status = server.status()
+            return status
         except Exception as e:
             print(f"Error fetching status for {server_ip}: {e}")
             return None
 
     def create_embed(self, status, server_ip, display_name=None):
         """Create status embed"""
-        is_online = status.get("online", False)
+        is_online = status is not None
         title_name = display_name or "Minecraft Server"
         
         embed = nextcord.Embed(
             title=f"{title_name} — {'Online' if is_online else 'Offline'}",
-            description="\n".join(status.get("motd", {}).get("clean", [])) or "No MOTD",
+            description="".join(status.motd.to_plain() or "No MOTD"),
             color=0x55FF55 if is_online else 0xFF5555,
             timestamp=datetime.now(timezone.utc)
         )
@@ -78,21 +81,46 @@ class AutoStatus(commands.Cog):
         embed.add_field(name="Address", value=f"`{server_ip}`", inline=True)
         embed.add_field(
             name="Players", 
-            value=f"{status.get('players', {}).get('online', 0)}/{status.get('players', {}).get('max', 0)}", 
+            value=f"{status.players.online}/{status.players.max if is_online else 0}", 
             inline=True
         )
-        embed.add_field(name="Version", value=status.get("version", "Unknown"), inline=True)
+        version = status.version.name if is_online else "Unknown"
+        if any(x in version.lower() for x in ["velocity", "bungeecord"]):
+            version = version.split(" ")[1]
+        embed.add_field(name="Version", value=str(version), inline=True)
 
         # Set author and footer
         embed.set_author(name=self.bot.user.name, icon_url=getattr(self.bot.user.display_avatar, "url", None))
         embed.set_footer(text="Last Updated")
 
         # Set thumbnail if valid
-        favicon = status.get("icon")
-        if favicon and isinstance(favicon, str) and not favicon.startswith("data:") and len(favicon) <= 2048:
-            embed.set_thumbnail(url=favicon)
+        try:
+            favicon = None
+            if hasattr(status, 'raw') and status.raw:
+                favicon = status.raw.get('favicon')
+            if not favicon and hasattr(status, 'icon'):
+                favicon = status.icon
+                
+            if favicon and isinstance(favicon, str):
+                if favicon.startswith("data:image"):
+                    try:
+                        header, b64data = favicon.split(',', 1)
+                        image_data = base64.b64decode(b64data)
+                        
+                        fp = io.BytesIO(image_data)
+                        file = nextcord.File(fp, filename="server_icon.png")
+                        
+                        embed.set_thumbnail(url="attachment://server_icon.png")
+                        return embed, file
+                    except Exception as e:
+                        print(f"Failed to decode base64 favicon: {e}")
+                elif len(favicon) <= 2048:
+                    embed.set_thumbnail(url=favicon)
+                    
+        except Exception as e:
+            print(f"Failed to set favicon: {e}")
 
-        return embed
+        return embed, None  # Return None as file if no favicon
 
     async def update_status(self):
         """Background task to update all status messages"""
@@ -105,8 +133,8 @@ class AutoStatus(commands.Cog):
 
                 status = self.get_status(cfg.get("server_ip"))
                 if status:
-                    embed = self.create_embed(status, cfg.get("server_ip"), cfg.get("name"))
-                    new_id = await self.update_message(channel, cfg.get("message_id"), embed)
+                    embed, file = self.create_embed(status, cfg.get("server_ip"), cfg.get("name"))
+                    new_id = await self.update_message(channel, cfg.get("message_id"), embed, file)
                     
                     if new_id and new_id != cfg.get("message_id"):
                         cfg["message_id"] = new_id
@@ -146,8 +174,8 @@ class AutoStatus(commands.Cog):
             await interaction.followup.send("Could not fetch server status. Will retry later.", ephemeral=True)
             return
 
-        embed = self.create_embed(status, server_ip, name)
-        msg_id = await self.update_message(interaction.channel, None, embed)
+        embed, file = self.create_embed(status, server_ip, name)
+        msg_id = await self.update_message(interaction.channel, None, embed, file)
         
         if msg_id:
             self.status_config[guild_key]["message_id"] = msg_id

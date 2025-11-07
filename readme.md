@@ -12,7 +12,7 @@ GreatNet Hosting was kind enough to provide this bot publically. Consider suppor
 
 
 ## Features
-- `/status <ip> [name]` — show a one-time server status embed (supports base64 favicons).
+- `/status <ip> [name]` — show a one-time server status embed only for that user.
 - `/autostatus <name> <ip>` — create an auto-updating status message in the current channel (requires Manage Channels).
 - Periodic updates every 5 minutes. Config persisted to `server_status_config.json`.
 
